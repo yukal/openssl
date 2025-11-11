@@ -29,7 +29,7 @@ PKI_DIR="${PWD%/}"
 #   brainpoolP384t1: RFC 5639 curve over a 384 bit prime field
 #   brainpoolP512r1: RFC 5639 curve over a 512 bit prime field
 #   brainpoolP512t1: RFC 5639 curve over a 512 bit prime field
-CERT_ALGORITHM=prime256v1
+CERT_CURVE=prime256v1
 
 CERT_SUBJECT="/C=UA/ST=Kyiv/O=HomeWorks"
 
@@ -86,7 +86,7 @@ GenerateCA() {
     SavePassword "$ca_password" "ca.pass"
 
     # 1. Generate the private key for Root CA (in ECDSA P-256 format)
-    openssl ecparam -genkey -noout -name $CERT_ALGORITHM | openssl ec -aes256 \
+    openssl ecparam -genkey -noout -name $CERT_CURVE | openssl ec -aes256 \
         -out private/ca.key.pem -passout pass:"$ca_password"
 
     chmod 400 private/ca.key.pem
@@ -136,7 +136,7 @@ GenerateIntermediate() {
     SavePassword "$ca_intr_password" "ca.pass"
 
     # 1. Generate the private key for Intermediate CA
-    openssl ecparam -genkey -noout -name $CERT_ALGORITHM | openssl ec -aes256 \
+    openssl ecparam -genkey -noout -name $CERT_CURVE | openssl ec -aes256 \
         -out private/intermediate.key.pem -passout pass:"$ca_intr_password"
 
     chmod 400 private/intermediate.key.pem
@@ -176,7 +176,7 @@ GenerateOCSP() {
     SavePassword "$ocsp_password" "$PKI_DIR/intermediate/ocsp.pass"
 
     # 1. Generate the private key for OCSP
-    openssl ecparam -genkey -noout -name $CERT_ALGORITHM | openssl ec -aes256 \
+    openssl ecparam -genkey -noout -name $CERT_CURVE | openssl ec -aes256 \
         -out $PKI_DIR/intermediate/private/ocsp.key.pem -passout pass:"$ocsp_password"
 
     chmod 400 $PKI_DIR/intermediate/private/ocsp.key.pem
@@ -222,7 +222,7 @@ GenerateServer() {
     cd server/$domain
 
     # 1. Generate the private key for the server (WITHOUT password protection!)
-    openssl ecparam -genkey -noout -name $CERT_ALGORITHM -out $domain.key
+    openssl ecparam -genkey -noout -name $CERT_CURVE -out $domain.key
     chmod 400 $domain.key
 
     local ca_intr_password=$(ReadPassword "$PKI_DIR/intermediate/ca.pass")
@@ -279,7 +279,7 @@ GenerateClient() {
     SavePassword "$pkcs12_password" "pkcs12.pass"
 
     # 1. Generate the private key for the client (password protected)
-    openssl ecparam -genkey -noout -name $CERT_ALGORITHM | openssl ec -aes256 \
+    openssl ecparam -genkey -noout -name $CERT_CURVE | openssl ec -aes256 \
         -out $domain.key -passout pass:"$pkey_password"
 
     chmod 400 $domain.key
