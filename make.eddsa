@@ -79,7 +79,7 @@ GenerateCA() {
         -key private/ca.key.pem -passin pass:"$ca_password" \
         -out certs/ca.cert.pem -config ca_root.cnf -extensions v3_ca
 
-    openssl x509 -in certs/ca.cert.pem -noout -text
+    openssl x509 -noout -text -in certs/ca.cert.pem
     echo
 
     # Generate the first CRL

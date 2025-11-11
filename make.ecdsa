@@ -97,7 +97,7 @@ GenerateCA() {
         -key private/ca.key.pem -passin pass:"$ca_password" \
         -out certs/ca.cert.pem -config ca_root.cnf -extensions v3_ca
 
-    openssl x509 -in certs/ca.cert.pem -noout -text
+    openssl x509 -noout -text -in certs/ca.cert.pem
     echo
 
     # Generate the first CRL
@@ -256,7 +256,8 @@ EOF
     openssl x509 -noout -text -in $domain.cert
 
     # CHECK: $domain-chain.cert (object including Intermediate CA) against Root CA (anchor)
-    openssl verify -show_chain -CAfile $PKI_DIR/root/certs/ca.cert.pem -untrusted $PKI_DIR/intermediate/certs/intermediate.cert.pem $domain.cert
+    openssl verify -show_chain -CAfile $PKI_DIR/root/certs/ca.cert.pem \
+        -untrusted $PKI_DIR/intermediate/certs/intermediate.cert.pem $domain.cert
 
     echo
 
@@ -306,7 +307,8 @@ GenerateClient() {
     openssl x509 -noout -text -in $domain.cert
 
     # CHECK: $domain-chain.cert (object including Intermediate CA) against Root CA (anchor)
-    openssl verify -show_chain -CAfile $PKI_DIR/root/certs/ca.cert.pem -untrusted $PKI_DIR/intermediate/certs/intermediate.cert.pem $domain.cert
+    openssl verify -show_chain -CAfile $PKI_DIR/root/certs/ca.cert.pem \
+        -untrusted $PKI_DIR/intermediate/certs/intermediate.cert.pem $domain.cert
     echo
 
     # 4. Export to PFX/PKCS#12 (requires client key password and export password)
