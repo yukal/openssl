@@ -88,15 +88,6 @@ main() {
             fi
             ;;
 
-        revoke)
-            if [ -z "$arg" ]; then
-                Usage;
-            else
-                RevokeClient "$arg";
-            fi
-
-            ;;
-
         *)
             Usage
             ;;

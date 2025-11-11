@@ -238,7 +238,6 @@ subjectAltName = $server_san
 EOF
 
     # 2. Create CSR for the server (key unprotected, -passin not needed)
-    # openssl req -new -sha256 -config $domain.ext -key $domain.key -out $domain.csr
     openssl req -new -sha256 -config $PKI_DIR/intermediate/ca_intr.cnf -config $domain.cnf \
         -subj "$CERT_SUBJECT/CN=$domain" \
         -key $domain.key -out $domain.csr
