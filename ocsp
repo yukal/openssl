@@ -1,0 +1,106 @@
+#!/bin/bash
+
+set -eo pipefail
+
+# Chose your PKI directory
+PKI_DIR="${PWD%/}"
+
+INTERMED_DIR=$PKI_DIR/intermediate
+# INTERMED_PASS=$(cat "$INTERMED_DIR/ca.pass")
+
+OCSP_PASSWD=$(cat "$INTERMED_DIR/ocsp.pass")
+
+RunOCSP() {
+    local ocsp_password=$(cat "$INTERMED_DIR/ocsp.pass")
+
+        # -CA $INTERMED_DIR/certs/intermediate.cert.pem \
+    openssl ocsp -host ocsp.server.loc -port 8080 -text -rmd sha256 \
+        -index $INTERMED_DIR/index.txt \
+        -CA $INTERMED_DIR/certs/ca-chain.cert.pem \
+        -rkey $INTERMED_DIR/private/ocsp.key.pem -passin pass:"$ocsp_password" \
+        -rsigner $INTERMED_DIR/certs/ocsp.cert.pem
+        # -nrequest 1
+}
+# Check status of Server Certificate
+CheckServer() {
+    local domain="$1"
+
+    openssl ocsp -url http://ocsp.server.loc:8080 -resp_text \
+        -CAfile $INTERMED_DIR/certs/ca-chain.cert.pem \
+        -issuer $INTERMED_DIR/certs/intermediate.cert.pem \
+        -cert $PKI_DIR/server/$domain/$domain.cert
+}
+
+# Check status of Client Certificate
+CheckClient() {
+    local domain="$1"
+
+    openssl ocsp -url http://ocsp.server.loc:8080 -resp_text \
+        -CAfile $INTERMED_DIR/certs/ca-chain.cert.pem \
+        -issuer $INTERMED_DIR/certs/intermediate.cert.pem \
+        -cert $PKI_DIR/client/$domain/$domain.cert
+}
+
+
+# --- Help / Usage ---
+Usage() {
+    echo "Usage: $0 <command> [arguments]"
+    echo ""
+    echo "Commands:"
+    echo "  run                           – Run OCSP server."
+    echo "  server <domain>               – Check for server certificate (e.g. server.loc)."
+    echo "  client <name>                 – Check for client certificate (e.g. client1)."
+    echo ""
+    echo "  <arg>? – optional      (command runs with optional argument)"
+    echo "  *CN    – Common Name   (certificate field)"
+    echo "  *SN    – Serial Number (certificate serial number)"
+    echo ""
+    exit 1
+}
+
+
+main() {
+    if [ "$#" -lt 1 ]; then
+        Usage
+    fi
+
+    local cmd="$1"
+    local arg="$2"
+
+    case "$cmd" in
+        run|default)
+            RunOCSP
+            ;;
+
+        server)
+            if [ -z "$arg" ]; then
+                Usage;
+            else
+                CheckServer "$arg";
+            fi
+            ;;
+
+        client)
+            if [ -z "$arg" ]; then
+                Usage;
+            else
+                CheckClient "$arg";
+            fi
+            ;;
+
+        revoke)
+            if [ -z "$arg" ]; then
+                Usage;
+            else
+                RevokeClient "$arg";
+            fi
+
+            ;;
+
+        *)
+            Usage
+            ;;
+    esac
+}
+
+main "$@"
