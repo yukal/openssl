@@ -1,0 +1,322 @@
+#!/bin/bash
+
+# Disclaimer
+#
+# https://www.openssl.org/
+# https://letsencrypt.org/docs/glossary/
+# https://letsencrypt.org/uk/docs/glossary/
+# https://openssl-ca.readthedocs.io/en/latest/create-the-root-pair.html
+# https://openssl-ca.readthedocs.io/en/latest/create-the-intermediate-pair.html
+# https://knowledge.digicert.com/quovadis/trust-link/elliptic-curve-cryptography-ecc
+
+set -eo pipefail
+
+# Chose your PKI directory
+PKI_DIR="${PWD%/}"
+
+CERT_SUBJECT="/C=UA/ST=Kyiv/O=HomeWorks"
+
+
+GeneratePassword() {
+    local len="$1"
+    head /dev/urandom | tr -dc A-Za-z0-9 | head -c $len
+}
+
+SavePassword() {
+    local password="$1"
+    local file="$2"
+
+    printf "%s" "$password" > "$file"
+    chmod 600 "$file"
+}
+
+ReadPassword() {
+    cat "$1"
+}
+
+InitDirs() {
+    if [ -d server ]; then rm -rf server; fi
+    if [ -d client ]; then rm -rf client; fi
+}
+
+GenerateCA() {
+    printf "⚙️  Creating Root CA...\n"
+    if [ -d root ]; then rm -rf root; fi
+
+    # Create directories referenced by ca_root.cnf
+    mkdir -p root/{certs,crl,csr,newcerts,private}
+    chmod 700 root/private
+
+    # Copy configuration for CA (for future Intermediate signing)
+    cp ca_root.cnf root/
+
+    cd root
+
+    # Create required database files
+    touch index.txt
+
+    # In hexadecimal format
+    echo "01" > crlnumber
+
+    # 1000 (0x3e8) or any initial hex value
+    # openssl rand -hex -out serial 8
+    echo 03e8 > serial
+
+    openssl rand -hex -out private/.rand 16
+    chmod 600 index.txt crlnumber serial private/.rand
+
+    local ca_password=$(GeneratePassword 64)
+    SavePassword "$ca_password" "ca.pass"
+
+    # 1. Generate the private key for Root CA (in RSA format)
+    openssl genrsa -aes256 -passout pass:"$ca_password" -out private/ca.key.pem 4096
+    chmod 400 private/ca.key.pem
+
+    # 2. Create a self-signed certificate for Root CA
+    openssl req -new -x509 -sha256 -days 7300 \
+        -subj "$CERT_SUBJECT/CN=HomeWorks Root CA" \
+        -key private/ca.key.pem -passin pass:"$ca_password" \
+        -out certs/ca.cert.pem -config ca_root.cnf -extensions v3_ca
+
+    openssl x509 -in certs/ca.cert.pem -noout -text
+    echo
+
+    # Generate the first CRL
+    openssl ca -gencrl -config ca_root.cnf -passin pass:"$ca_password" -out crl/ca.crl.pem
+    openssl crl -noout -text -in crl/ca.crl.pem
+    echo
+
+    cd "$PKI_DIR"
+}
+
+GenerateIntermediate() {
+    printf "⚙️  Creating Intermediate CA...\n"
+    if [ -d intermediate ]; then rm -rf intermediate; fi
+
+    mkdir -p intermediate/{certs,crl,csr,newcerts,private}
+    chmod 700 intermediate/private
+
+    cp ca_intr.cnf intermediate/
+    cd intermediate
+
+    # Create required database files
+    touch index.txt
+
+    # In hexadecimal format
+    echo "01" > crlnumber
+
+    # 1000 (0x3e8) or any initial hex value
+    # openssl rand -hex -out serial 8
+    echo 03e8 > serial
+
+    openssl rand -hex -out private/.rand 16
+    chmod 600 index.txt crlnumber serial private/.rand
+
+    local ca_root_password=$(ReadPassword "$PKI_DIR/root/ca.pass")
+    local ca_intr_password=$(GeneratePassword 64)
+    SavePassword "$ca_intr_password" "ca.pass"
+
+    # 1. Generate the private key for Intermediate CA
+    openssl genrsa -aes256 -passout pass:"$ca_intr_password" -out private/intermediate.key.pem 4096
+    chmod 400 private/intermediate.key.pem
+
+    # 2. Create CSR for Intermediate CA (using the created key)
+    openssl req -new -sha256 -config ca_intr.cnf \
+        -subj "$CERT_SUBJECT/CN=HomeWorks Intermediate CA" \
+        -key private/intermediate.key.pem -passin pass:"$ca_intr_password" \
+        -out csr/intermediate.csr.pem
+
+    # 3. Sign CSR with Root CA certificate (Root password needed)
+    openssl ca -days 3650 -md sha256 -notext -batch \
+        -keyfile $PKI_DIR/root/private/ca.key.pem \
+        -cert $PKI_DIR/root/certs/ca.cert.pem \
+        -config $PKI_DIR/root/ca_root.cnf -extensions v3_intermediate_ca \
+        -in csr/intermediate.csr.pem -passin pass:"$ca_root_password" \
+        -out certs/intermediate.cert.pem
+
+    # 4. Create CA chain (for future use in Server/Client)
+    cat certs/intermediate.cert.pem $PKI_DIR/root/certs/ca.cert.pem > certs/ca-chain.cert.pem
+    chmod -R 444 certs/*.pem
+
+    openssl x509 -noout -text -in certs/intermediate.cert.pem
+
+    # CHECK: Intermediate CA (object) against Root CA (anchor)
+    openssl verify -show_chain -CAfile $PKI_DIR/root/certs/ca.cert.pem certs/intermediate.cert.pem
+    echo
+
+    cd "$PKI_DIR"
+}
+
+GenerateOCSP() {
+    printf "⚙️  Creating OCSP...\n"
+
+    local ca_intr_password=$(ReadPassword "$PKI_DIR/intermediate/ca.pass")
+    local ocsp_password=$(GeneratePassword 64)
+    SavePassword "$ocsp_password" "$PKI_DIR/intermediate/ocsp.pass"
+
+    # 1. Generate the private key for OCSP
+    openssl ecparam -genkey -noout -name $CERT_ALGORITHM | openssl ec -aes256 \
+        -out $PKI_DIR/intermediate/private/ocsp.key.pem -passout pass:"$ocsp_password"
+
+    chmod 400 $PKI_DIR/intermediate/private/ocsp.key.pem
+
+    # 2. Create CSR for Intermediate OCSP (using the created key)
+    openssl req -new -sha256 -config $PKI_DIR/intermediate/ca_intr.cnf \
+        -subj "$CERT_SUBJECT/CN=HomeWorks OCSP" \
+        -key $PKI_DIR/intermediate/private/ocsp.key.pem -passin pass:"$ocsp_password" \
+        -out $PKI_DIR/intermediate/csr/ocsp.csr.pem
+
+    # 3. Sign CSR with Root CA certificate (Root password needed)
+    openssl ca -days 375 -md sha256 -notext -batch \
+        -keyfile $PKI_DIR/intermediate/private/intermediate.key.pem -passin pass:"$ca_intr_password" \
+        -cert $PKI_DIR/intermediate/certs/intermediate.cert.pem \
+        -config $PKI_DIR/intermediate/ca_intr.cnf -extensions ocsp \
+        -in $PKI_DIR/intermediate/csr/ocsp.csr.pem \
+        -out $PKI_DIR/intermediate/certs/ocsp.cert.pem
+
+    openssl x509 -noout -text -in $PKI_DIR/intermediate/certs/ocsp.cert.pem
+
+    # Generate the first CRL
+    openssl ca -gencrl -config $PKI_DIR/intermediate/ca_intr.cnf -passin pass:"$ca_intr_password" \
+        -out $PKI_DIR/intermediate/crl/intermediate.crl.pem
+
+    openssl crl -noout -text -in $PKI_DIR/intermediate/crl/intermediate.crl.pem
+
+    echo
+
+    # CHECK: OCSP (object) against Root CA (anchor)
+    openssl verify -show_chain -CAfile $PKI_DIR/root/certs/ca.cert.pem \
+        -untrusted $PKI_DIR/intermediate/certs/intermediate.cert.pem $PKI_DIR/intermediate/certs/ocsp.cert.pem
+
+    echo
+}
+
+GenerateServer() {
+    local domain="$1"
+    local server_san="DNS:$domain,DNS:*.$domain,IP:127.0.0.1"
+
+    printf "⚙️  Creating Server Certificate (for Nginx)...\n"
+
+    mkdir -p server/$domain
+    cd server/$domain
+
+    # 1. Generate the private key for the server (WITHOUT password protection!)
+    openssl genrsa -out $domain.key 2048
+    chmod 400 $domain.key
+
+    local ca_intr_password=$(ReadPassword "$PKI_DIR/intermediate/ca.pass")
+
+    # 2a. Create temporary config for SAN extensions (locally)
+    # This config MUST have a [ req ] section and define extensions
+    cat > $domain.cnf <<EOF
+[ req ]
+req_extensions = server_san_exts
+
+[ server_san_exts ]
+subjectAltName = $server_san
+EOF
+
+    # 2. Create CSR for the server (key unprotected, -passin not needed)
+    # openssl req -new -sha256 -config $domain.ext -key $domain.key -out $domain.csr
+    openssl req -new -sha256 -config $PKI_DIR/intermediate/ca_intr.cnf -config $domain.cnf \
+        -subj "$CERT_SUBJECT/CN=$domain" \
+        -key $domain.key -out $domain.csr
+
+    # 3. Sign CSR with Intermediate CA certificate (Intermediate password needed)
+    openssl ca -days 375 -md sha256 -notext -batch \
+        -keyfile $PKI_DIR/intermediate/private/intermediate.key.pem -passin pass:"$ca_intr_password" \
+        -cert $PKI_DIR/intermediate/certs/intermediate.cert.pem \
+        -config $PKI_DIR/intermediate/ca_intr.cnf -extensions server_cert \
+        -in $domain.csr -out $domain.cert
+
+    # 4. Create chain for Nginx (End Entity + Intermediate CA)
+    cat $domain.cert $PKI_DIR/intermediate/certs/intermediate.cert.pem > $domain-chain.cert
+
+    openssl x509 -noout -text -in $domain.cert
+
+    # CHECK: $domain-chain.cert (object including Intermediate CA) against Root CA (anchor)
+    openssl verify -show_chain -CAfile $PKI_DIR/root/certs/ca.cert.pem -untrusted $PKI_DIR/intermediate/certs/intermediate.cert.pem $domain.cert
+
+    echo
+
+    cd "$PKI_DIR"
+}
+
+GenerateClient() {
+    printf "⚙️  Creating Client Certificate (for browser)... \n"
+
+    local domain="$1"
+
+    mkdir -p client/$domain
+    cd client/$domain
+
+    local ca_intr_password=$(ReadPassword "$PKI_DIR/intermediate/ca.pass")
+    local pkey_password=$(GeneratePassword 64)
+    local pkcs12_password=$(GeneratePassword 64)
+
+    SavePassword "$pkey_password" "pkey.pass"
+    SavePassword "$pkcs12_password" "pkcs12.pass"
+
+    # 1. Generate the private key for the client (password protected)
+    openssl genrsa -aes256 -passout pass:"$pkey_password" -out $domain.key 2048
+    chmod 400 $domain.key
+
+    # 2. Create CSR for the client
+    openssl req -new -sha256 -config $PKI_DIR/intermediate/ca_intr.cnf \
+        -subj "$CERT_SUBJECT/CN=Client_${domain}/UID=0197ad51-17b1-7efa-8531-8ef66c79e49d" \
+        -key $domain.key -passin pass:"$pkey_password" \
+        -out $domain.csr
+
+    # 3. Sign CSR with Intermediate CA certificate (Intermediate password needed)
+    openssl ca -days 375 -md sha256 -notext -batch \
+        -keyfile $PKI_DIR/intermediate/private/intermediate.key.pem -passin pass:"$ca_intr_password" \
+        -cert $PKI_DIR/intermediate/certs/intermediate.cert.pem \
+        -config $PKI_DIR/intermediate/ca_intr.cnf -extensions usr_cert \
+        -in $domain.csr -out $domain.cert
+
+    # 4. Create chain for client applications (End Entity + Intermediate CA)
+    cat $domain.cert $PKI_DIR/intermediate/certs/intermediate.cert.pem > $domain-chain.cert
+
+        # Create full chain, including Root CA (for some applications, but not for -CAfile)
+        cat $domain.cert $PKI_DIR/intermediate/certs/ca-chain.cert.pem > $domain-fullchain.cert
+
+    openssl x509 -noout -text -in $domain.cert
+
+    # CHECK: $domain-chain.cert (object including Intermediate CA) against Root CA (anchor)
+    openssl verify -show_chain -CAfile $PKI_DIR/root/certs/ca.cert.pem -untrusted $PKI_DIR/intermediate/certs/intermediate.cert.pem $domain.cert
+    echo
+
+    # 4. Export to PFX/PKCS#12 (requires client key password and export password)
+
+    #     -certfile $PKI_DIR/intermediate/certs/intermediate.cert.pem \
+    openssl pkcs12 -in $domain.cert -name "Client $domain" -export \
+        -certfile $PKI_DIR/intermediate/certs/ca-chain.cert.pem \
+        -inkey $domain.key -passin pass:"$pkey_password" \
+        -out $domain.p12 -passout pass:"$pkcs12_password"
+
+    cd "$PKI_DIR"
+}
+
+RemoveBrowserCerts() {
+    certutil -D -d "$HOME/.pki/nssdb" -n "Client webmaster"
+    certutil -D -d "$HOME/.pki/nssdb" -n "HomeWorks Intermediate CA"
+    certutil -D -d "$HOME/.pki/nssdb" -n "HomeWorks Root CA"
+}
+
+InstallBrowserCerts() {
+    certutil -A -t "C,C,C" -n "HomeWorks Root CA" -i /home/webmaster/.ssh/pki/root/certs/ca.cert.pem -d "$HOME/.pki/nssdb"
+    certutil -A -t "C,C,C" -n "HomeWorks Intermediate CA" -i /home/webmaster/.ssh/pki/intermediate/certs/intermediate.cert.pem -d "$HOME/.pki/nssdb"
+}
+
+RemoveBrowserCerts
+GenerateCA
+GenerateIntermediate
+GenerateOCSP
+
+InitDirs
+
+GenerateClient "webmaster"
+GenerateServer "server.loc"
+InstallBrowserCerts
+
+printf "\n🎉 Certificates generated.\n"
