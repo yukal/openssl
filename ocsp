@@ -21,6 +21,7 @@ RunOCSP() {
         -rsigner $INTERMED_DIR/certs/ocsp.cert.pem
         # -nrequest 1
 }
+
 # Check status of Server Certificate
 CheckServer() {
     local domain="$1"
